@@ -359,7 +359,10 @@ interface FocusableOptionWithId<Option> {
 interface CategorizedGroup<Option, Group extends GroupBase<Option>> {
   type: 'group';
   data: Group;
-  options: readonly CategorizedOption<Option>[];
+  options: readonly (
+    | CategorizedOption<Option>
+    | CategorizedGroup<Option, Group>
+  )[];
   index: number;
 }
 
@@ -393,22 +396,23 @@ function toCategorizedOption<
   };
 }
 
-function buildCategorizedOptions<
+function toCategorizedOptions<
   Option,
   IsMulti extends boolean,
   Group extends GroupBase<Option>
 >(
   props: Props<Option, IsMulti, Group>,
+  options: Props<Option, IsMulti, Group>['options'],
   selectValue: Options<Option>
 ): CategorizedGroupOrOption<Option, Group>[] {
-  return props.options
+  return options
     .map((groupOrOption, groupOrOptionIndex) => {
       if ('options' in groupOrOption) {
-        const categorizedOptions = groupOrOption.options
-          .map((option, optionIndex) =>
-            toCategorizedOption(props, option, selectValue, optionIndex)
-          )
-          .filter((categorizedOption) => isFocusable(props, categorizedOption));
+        const categorizedOptions = toCategorizedOptions(
+          props,
+          groupOrOption.options,
+          selectValue
+        );
         return categorizedOptions.length > 0
           ? {
               type: 'group' as const,
@@ -431,6 +435,17 @@ function buildCategorizedOptions<
     .filter(notNullish);
 }
 
+function buildCategorizedOptions<
+  Option,
+  IsMulti extends boolean,
+  Group extends GroupBase<Option>
+>(
+  props: Props<Option, IsMulti, Group>,
+  selectValue: Options<Option>
+): CategorizedGroupOrOption<Option, Group>[] {
+  return toCategorizedOptions(props, props.options, selectValue);
+}
+
 function buildFocusableOptionsFromCategorizedOptions<
   Option,
   Group extends GroupBase<Option>
@@ -439,7 +454,19 @@ function buildFocusableOptionsFromCategorizedOptions<
     (optionsAccumulator, categorizedOption) => {
       if (categorizedOption.type === 'group') {
         optionsAccumulator.push(
-          ...categorizedOption.options.map((option) => option.data)
+          ...categorizedOption.options.reduce((options, option) => {
+            if (option.type === 'group') {
+              options.push(
+                ...buildFocusableOptionsFromCategorizedOptions(option.options)
+              );
+
+              return options;
+            }
+
+            options.push(option.data);
+
+            return options;
+          }, [] as Option[])
         );
       } else {
         optionsAccumulator.push(categorizedOption.data);
@@ -458,10 +485,19 @@ function buildFocusableOptionsWithIds<Option, Group extends GroupBase<Option>>(
     (optionsAccumulator, categorizedOption) => {
       if (categorizedOption.type === 'group') {
         optionsAccumulator.push(
-          ...categorizedOption.options.map((option) => ({
-            data: option.data,
-            id: `${optionId}-${categorizedOption.index}-${option.index}`,
-          }))
+          ...categorizedOption.options.reduce((options, option) => {
+            if (option.type === 'group') {
+              options.push(
+                ...buildFocusableOptionsWithIds(option.options, optionId)
+              );
+              return options;
+            }
+            options.push({
+              data: option.data,
+              id: `${optionId}-${categorizedOption.index}-${option.index}`,
+            });
+            return options;
+          }, [] as FocusableOptionWithId<Option>[])
         );
       } else {
         optionsAccumulator.push({
@@ -2014,33 +2050,41 @@ export default class Select<
       );
     };
 
+    const renderGroup = (item: CategorizedGroup<Option, Group>) => {
+      const { data, options, index: groupIndex } = item;
+      const groupId = `${this.getElementId('group')}-${groupIndex}`;
+      const headingId = `${groupId}-heading`;
+
+      return (
+        <Group
+          {...commonProps}
+          key={groupId}
+          data={data}
+          options={options}
+          Heading={GroupHeading}
+          headingProps={{
+            id: headingId,
+            data: item.data,
+          }}
+          label={this.formatGroupLabel(item.data)}
+        >
+          {item.options.map((option) => {
+            if (option.type === 'group') {
+              return renderGroup(option);
+            } else if (option.type === 'option') {
+              return render(option, `${groupIndex}-${option.index}`);
+            }
+          })}
+        </Group>
+      );
+    };
+
     let menuUI: ReactNode;
 
     if (this.hasOptions()) {
       menuUI = this.getCategorizedOptions().map((item) => {
         if (item.type === 'group') {
-          const { data, options, index: groupIndex } = item;
-          const groupId = `${this.getElementId('group')}-${groupIndex}`;
-          const headingId = `${groupId}-heading`;
-
-          return (
-            <Group
-              {...commonProps}
-              key={groupId}
-              data={data}
-              options={options}
-              Heading={GroupHeading}
-              headingProps={{
-                id: headingId,
-                data: item.data,
-              }}
-              label={this.formatGroupLabel(item.data)}
-            >
-              {item.options.map((option) =>
-                render(option, `${groupIndex}-${option.index}`)
-              )}
-            </Group>
-          );
+          return renderGroup(item);
         } else if (item.type === 'option') {
           return render(item, `${item.index}`);
         }
